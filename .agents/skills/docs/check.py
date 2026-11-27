@@ -173,11 +173,11 @@ def check_markdown_syntax(path: Path, rel: str) -> list[route.Finding]:
 
 def check_links(path: Path, rel: str, root: Path | None = None) -> list[route.Finding]:
     """Check relative links resolve, and flag placeholder or redirecting raw image URLs."""
-    base = root or route.REPO_ROOT
+    base = (root or route.REPO_ROOT).resolve()
     source = path.read_text(encoding="utf-8")
     findings: list[route.Finding] = []
     for n, line in check_writing.unfenced_lines(source):
-        for match in MD_LINK.finditer(line):
+        for match in MD_LINK.finditer(check_writing.INLINE_CODE.sub(" ", line)):
             raw_target = match.group(1).strip("<>")
             if PLACEHOLDER_URL.search(raw_target):
                 findings.append(
@@ -206,8 +206,16 @@ def check_links(path: Path, rel: str, root: Path | None = None) -> list[route.Fi
             target_path = raw_target.split("#", 1)[0].split("?", 1)[0]
             if not target_path:
                 continue
-            resolved = (path.parent / target_path).resolve()
-            if not resolved.exists() and not (base / target_path).exists():
+            if target_path.startswith("/"):
+                resolved = (base / target_path.lstrip("/")).resolve()
+            else:
+                resolved = (path.parent / target_path).resolve()
+            try:
+                resolved.relative_to(base)
+                inside_repo = True
+            except ValueError:
+                inside_repo = False
+            if not inside_repo or not resolved.exists():
                 findings.append(
                     route.Finding(
                         "major",
@@ -217,6 +225,26 @@ def check_links(path: Path, rel: str, root: Path | None = None) -> list[route.Fi
                         f"broken relative link {raw_target!r}",
                     )
                 )
+    return findings
+
+
+def check_file(
+    full: Path,
+    change: route.Change,
+    selection: route.Selection,
+    root: Path | None = None,
+) -> list[route.Finding]:
+    """Run all Markdown checks for one file, keeping critical/major syntax errors unfiltered."""
+    findings: list[route.Finding] = []
+    syntax_findings = check_markdown_syntax(full, change.path)
+    findings += [f for f in syntax_findings if f.severity in ("critical", "major")]
+    findings += selection.relevant(
+        [f for f in syntax_findings if f.severity == "minor"]
+    )
+    findings += selection.relevant(check_links(full, change.path, root=root))
+    findings += selection.relevant(
+        check_writing.check_page(full, change.path, new=change.status == "A")
+    )
     return findings
 
 
@@ -232,12 +260,7 @@ def main() -> int:
         full = route.REPO_ROOT / change.path
         if not full.is_file():
             continue
-        # Syntax/unclosed fences and broken links are always relevant on touched lines
-        findings += selection.relevant(check_markdown_syntax(full, change.path))
-        findings += selection.relevant(check_links(full, change.path))
-        findings += selection.relevant(
-            check_writing.check_page(full, change.path, new=change.status == "A")
-        )
+        findings += check_file(full, change, selection)
 
     return route.report("docs", findings)
 

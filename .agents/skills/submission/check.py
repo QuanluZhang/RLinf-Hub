@@ -314,7 +314,8 @@ def check_catalog(
         content = readme_path.read_text(encoding="utf-8", errors="ignore")
         for category, project in projects:
             prefix = f"{category}/{project}"
-            if prefix not in content:
+            pattern = re.compile(rf"\(/?{re.escape(prefix)}(?:/[^)\s]*)?\)")
+            if not pattern.search(content):
                 findings.append(
                     route.Finding(
                         "major",
@@ -336,7 +337,7 @@ def check_catalog(
                         ("http://", "https://", "mailto:")
                     ):
                         continue
-                    if not (base / target).exists():
+                    if not (base / target.lstrip("/")).exists():
                         findings.append(
                             route.Finding(
                                 "major",

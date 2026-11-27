@@ -120,6 +120,62 @@ def test_links_check_broken_placeholder_and_redirect(tmp_path: Path) -> None:
     )
 
 
+def test_links_ignore_inline_code_and_resolve_subdirs_and_root_links(
+    tmp_path: Path,
+) -> None:
+    check = _load_docs_check()
+    (tmp_path / "README.md").write_text("# Root\n", encoding="utf-8")
+    proj = tmp_path / "models" / "foo"
+    (proj / "configs").mkdir(parents=True)
+    (proj / "configs" / "a.yaml").write_text("model_type: foo\n", encoding="utf-8")
+    readme = proj / "README.md"
+    readme.write_text(
+        "Inline code like `layers[0](obs)` and `[Name](models/bar/)` is ignored.\n"
+        "Code-styled link labels still resolve: [`a.yaml`](configs/a.yaml).\n"
+        "Root-anchored link resolves: [catalog](/README.md).\n"
+        "Broken root-anchored link fails: [missing](/DOES_NOT_EXIST.md).\n"
+        "Repo-relative path from subdir fails on GitHub: [bad](models/foo/configs/a.yaml).\n",
+        encoding="utf-8",
+    )
+    findings = check.check_links(readme, "models/foo/README.md", root=tmp_path)
+    targets = [(f.line, f.message) for f in findings]
+    assert len(targets) == 2
+    assert (4, "broken relative link '/DOES_NOT_EXIST.md'") in targets
+    assert (5, "broken relative link 'models/foo/configs/a.yaml'") in targets
+
+
+def test_modified_file_keeps_critical_major_syntax_errors_unfiltered(
+    tmp_path: Path, monkeypatch
+) -> None:
+    check = _load_docs_check()
+    route = sys.modules["route"]
+
+    doc = tmp_path / "README.md"
+    doc.write_text(
+        "| Col1 | Col2 |\n"
+        "|---|---|\n"
+        "  | misaligned | row |\n\n"
+        "```bash\n"
+        "$ old prompt on line 6\n"
+        "```\n\n"
+        "```python\n"
+        "unclosed = True\n",
+        encoding="utf-8",
+    )
+    # Simulate editing only line 3 (appending a misaligned table row) and deleting the
+    # closing fence at the bottom, so opening lines 1, 6, and 9 are not in added_lines.
+    monkeypatch.setattr(route, "added_lines", lambda *args, **kwargs: frozenset({3}))
+    change = route.Change("M", "README.md")
+    selection = route.Selection("main", (change,), all_lines=False)
+
+    findings = check.check_file(doc, change, selection, root=tmp_path)
+    severities = {(f.severity, f.line, f.rule) for f in findings}
+    assert ("major", 1, "docs/markdown") in severities
+    assert ("critical", 9, "docs/markdown") in severities
+    # Minor prompt on unchanged line 6 stays filtered out
+    assert not any(f.severity == "minor" and f.line == 6 for f in findings)
+
+
 def test_writing_rules_en_zh_hard_wrap_and_structure(tmp_path: Path) -> None:
     check = _load_docs_check()
     cw = check.check_writing

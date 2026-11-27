@@ -164,3 +164,16 @@ def test_catalog_and_artifacts_checks(tmp_path: Path) -> None:
     by_path = {f.path: f.severity for f in art_findings}
     assert by_path["models/smolvla/model.safetensors"] == "critical"
     assert by_path["models/smolvla/outputs/run.log"] == "major"
+
+
+def test_catalog_enforces_path_boundary_for_shared_prefixes(tmp_path: Path) -> None:
+    check = _load_submission_check()
+    route = sys.modules["route"]
+    _make_valid_model(tmp_path, "pi05")
+
+    # Root READMEs list models/pi05/, not models/pi0/
+    changes = [route.Change("A", "models/pi0/README.md")]
+    findings = check.check_catalog([("models", "pi0")], changes, root=tmp_path)
+    assert len(findings) == 2
+    assert {f.path for f in findings} == {"README.md", "README.zh-CN.md"}
+    assert all(f.rule == "submission/catalog" for f in findings)
